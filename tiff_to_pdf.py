@@ -7,6 +7,7 @@ import argparse
 import csv
 import logging
 import os
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -117,6 +118,21 @@ def resolve_dpi(*info_objects: dict) -> tuple[int, int]:
     return 300, 300
 
 
+def prepare_mode_i(image: Image.Image) -> Image.Image:
+    extrema = image.getextrema()
+    if isinstance(extrema, tuple):
+        min_value, max_value = extrema
+    else:
+        min_value = max_value = extrema
+
+    if max_value <= 255 or max_value == min_value:
+        return image.convert("L")
+
+    scale = 255 / (max_value - min_value)
+    offset = -min_value * scale
+    return image.point(lambda value: value * scale + offset).convert("L")
+
+
 def prepare_frame(frame: Image.Image) -> Image.Image:
     image = ImageOps.exif_transpose(frame)
 
@@ -127,8 +143,10 @@ def prepare_frame(frame: Image.Image) -> Image.Image:
         image = background.convert("RGB")
     elif image.mode == "P":
         image = image.convert("RGB")
-    elif image.mode == "I" or image.mode.startswith("I;16"):
+    elif image.mode.startswith("I;16"):
         image = image.convert("I").point(_GREYSCALE_16_TO_8_LUT, mode="L")
+    elif image.mode == "I":
+        image = prepare_mode_i(image)
     elif image.mode not in PDF_SAFE_MODES:
         image = image.convert("RGB")
 
@@ -161,13 +179,34 @@ def verify_pdf(pdf_path: Path) -> None:
         _ = reader.pages[0].mediabox
 
 
+def copy_with_exclusive_create(temp_path: Path, pdf_path: Path) -> None:
+    fd = os.open(pdf_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as dest_file, temp_path.open("rb") as src_file:
+            shutil.copyfileobj(src_file, dest_file)
+            dest_file.flush()
+            os.fsync(dest_file.fileno())
+    except Exception:
+        try:
+            pdf_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def publish_without_overwrite(temp_path: Path, pdf_path: Path) -> None:
     if os.name == "nt":
         os.rename(temp_path, pdf_path)
         return
 
-    os.link(temp_path, pdf_path)
-    temp_path.unlink()
+    try:
+        os.link(temp_path, pdf_path)
+    except FileExistsError:
+        raise
+    except OSError:
+        copy_with_exclusive_create(temp_path, pdf_path)
+    else:
+        temp_path.unlink()
 
 
 def convert_tiff_to_pdf(tiff_path: Path, pdf_path: Path) -> None:
