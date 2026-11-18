@@ -186,7 +186,7 @@ def copy_with_exclusive_create(temp_path: Path, pdf_path: Path) -> None:
             shutil.copyfileobj(src_file, dest_file)
             dest_file.flush()
             os.fsync(dest_file.fileno())
-    except Exception:
+    except BaseException:
         try:
             pdf_path.unlink()
         except OSError:
