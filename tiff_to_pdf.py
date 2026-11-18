@@ -67,6 +67,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def configure_logging(log_file: Path | None) -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     if log_file is not None:
@@ -104,7 +110,8 @@ def resolve_dpi(*info_objects: dict) -> tuple[int, int]:
             y_dpi = float(dpi[1])
         except (TypeError, ValueError):
             continue
-        if 1 <= x_dpi <= 2400 and 1 <= y_dpi <= 2400:
+        # Pillow reports dpi=(1, 1) when TIFF resolution metadata is absent.
+        if 1 < x_dpi <= 2400 and 1 < y_dpi <= 2400:
             return int(round(x_dpi)), int(round(y_dpi))
     return 300, 300
 
@@ -164,7 +171,7 @@ def convert_tiff_to_pdf(tiff_path: Path, pdf_path: Path) -> None:
         frames[0].save(
             temp_path,
             "PDF",
-            resolution=dpi,
+            dpi=dpi,
             save_all=True,
             append_images=frames[1:],
         )
@@ -245,6 +252,7 @@ def write_results_csv(csv_path: Path, results: list[ConversionResult]) -> None:
 
 
 def main() -> int:
+    configure_stdio()
     args = parse_args()
     root = args.source_folder.expanduser().resolve()
 
