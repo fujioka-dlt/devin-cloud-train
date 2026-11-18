@@ -32,6 +32,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without deps
 TIFF_SUFFIXES = {".tif", ".tiff"}
 PDF_SAFE_MODES = {"1", "L", "RGB", "CMYK"}
 DEFAULT_CSV_NAME = "tiff_to_pdf_results.csv"
+_GREYSCALE_16_TO_8_LUT = tuple((value * 255) // 65535 for value in range(65536))
 
 
 @dataclass
@@ -126,6 +127,8 @@ def prepare_frame(frame: Image.Image) -> Image.Image:
         image = background.convert("RGB")
     elif image.mode == "P":
         image = image.convert("RGB")
+    elif image.mode == "I" or image.mode.startswith("I;16"):
+        image = image.convert("I").point(_GREYSCALE_16_TO_8_LUT, mode="L")
     elif image.mode not in PDF_SAFE_MODES:
         image = image.convert("RGB")
 
@@ -149,12 +152,22 @@ def load_pdf_frames(tiff_path: Path) -> tuple[list[Image.Image], tuple[int, int]
 
 
 def verify_pdf(pdf_path: Path) -> None:
-    with PdfReader(str(pdf_path)) as reader:
+    with pdf_path.open("rb") as pdf_file:
+        reader = PdfReader(pdf_file)
         if reader.is_encrypted:
             raise ValueError("PDF が暗号化されています")
         if len(reader.pages) == 0:
             raise ValueError("PDF にページがありません")
         _ = reader.pages[0].mediabox
+
+
+def publish_without_overwrite(temp_path: Path, pdf_path: Path) -> None:
+    if os.name == "nt":
+        os.rename(temp_path, pdf_path)
+        return
+
+    os.link(temp_path, pdf_path)
+    temp_path.unlink()
 
 
 def convert_tiff_to_pdf(tiff_path: Path, pdf_path: Path) -> None:
@@ -176,7 +189,7 @@ def convert_tiff_to_pdf(tiff_path: Path, pdf_path: Path) -> None:
             append_images=frames[1:],
         )
         verify_pdf(temp_path)
-        temp_path.replace(pdf_path)
+        publish_without_overwrite(temp_path, pdf_path)
     finally:
         if temp_path.exists():
             temp_path.unlink()
@@ -206,6 +219,14 @@ def process_tiff(tiff_path: Path, dry_run: bool) -> ConversionResult:
 
     try:
         convert_tiff_to_pdf(tiff_path, pdf_path)
+    except FileExistsError:
+        return ConversionResult(
+            status="skipped",
+            source_tiff=tiff_path,
+            pdf_path=pdf_path,
+            message="変換中に同名 PDF が作成されました",
+            processed_at=processed_at,
+        )
     except Exception as exc:
         logging.exception("変換に失敗しました: %s", tiff_path)
         return ConversionResult(
